@@ -113,6 +113,27 @@ def test_flow_matching_then_sampling_recovers_target():
     assert err < 0.35, f"8-step decode mean {err} too far from target"
 
 
+def test_loss_aux_and_weight_clamp():
+    torch.manual_seed(0)
+    flow_net = SimpleMLPAdaLN(LDIM, 32, LDIM, DIM, 2, num_time_conds=2)
+    weight_fn = AdaptiveWeight()
+    cond, x1 = torch.randn(8, DIM), torch.randn(8, LDIM)
+
+    loss, aux = flow_matching_loss(flow_net, cond, x1, weight_fn, return_aux=True)
+    assert loss.requires_grad and not aux["mse"].requires_grad
+    assert aux["mse"].item() > 0
+    assert torch.allclose(aux["w"], torch.zeros(()))  # zero-initialized w
+    _, aux_lsd = lsd_loss(flow_net, cond, x1, weight_fn, return_aux=True)
+    assert aux_lsd["mse"].item() > 0
+
+    # exp(-w) amplification is capped: an extreme w behaves like w = -4.
+    from training.losses import _weighted
+
+    err = torch.ones(4, 1)
+    extreme = _weighted(err, torch.full((4, 1), -100.0))
+    assert torch.allclose(extreme, torch.exp(torch.tensor(4.0)) - 4.0)
+
+
 def test_lsd_loss_backward(flow_lm):
     torch.manual_seed(0)
     flow_net = SimpleMLPAdaLN(LDIM, 32, LDIM, DIM, 2, num_time_conds=2)

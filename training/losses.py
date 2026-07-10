@@ -52,9 +52,15 @@ class AdaptiveWeight(nn.Module):
 
 
 def _weighted(per_sample: torch.Tensor, w: torch.Tensor | None) -> torch.Tensor:
-    """Apply exp(-w) * err + w weighting (Eq. 5-6) and reduce to a scalar."""
+    """Apply exp(-w) * err + w weighting (Eq. 5-6) and reduce to a scalar.
+
+    w is clamped to [-4, 4]: near convergence w tracks ln(err), and exp(-w)
+    would otherwise amplify the gradient of a late hard batch by ~1/err,
+    destabilizing the end of training.
+    """
     if w is None:
         return per_sample.mean()
+    w = w.clamp(-4.0, 4.0)
     return (torch.exp(-w) * per_sample + w).mean()
 
 
@@ -64,13 +70,17 @@ def flow_matching_loss(
     x1: torch.Tensor,
     weight_fn: AdaptiveWeight | None = None,
     generator: torch.Generator | None = None,
-) -> torch.Tensor:
+    return_aux: bool = False,
+) -> torch.Tensor | tuple[torch.Tensor, dict]:
     """Flow-matching loss (Eq. 5) on the diagonal s == t.
 
     Args:
         flow_net: SimpleMLPAdaLN with signature (cond, s, t, x) -> flow.
         cond: [M, D] backbone conditioning vectors.
         x1: [M, ldim] normalized target latents (data, time 1).
+        return_aux: also return {"mse": raw unweighted MSE, "w": mean learned
+            weight} (detached, for logging) — the weighted loss alone cannot
+            distinguish error reduction from w drift.
     """
     m = x1.shape[0]
     t = torch.rand(m, 1, device=x1.device, dtype=x1.dtype, generator=generator)
@@ -79,7 +89,15 @@ def flow_matching_loss(
     v_target = x1 - eps
     pred = flow_net(cond, t, t, x_t)
     per_sample = (pred - v_target).pow(2).mean(dim=-1, keepdim=True)
-    return _weighted(per_sample, weight_fn(t, t) if weight_fn is not None else None)
+    w = weight_fn(t, t) if weight_fn is not None else None
+    loss = _weighted(per_sample, w)
+    if return_aux:
+        aux = {
+            "mse": per_sample.detach().mean(),
+            "w": w.detach().mean() if w is not None else torch.zeros((), device=x1.device),
+        }
+        return loss, aux
+    return loss
 
 
 def lsd_loss(
@@ -88,7 +106,8 @@ def lsd_loss(
     x1: torch.Tensor,
     weight_fn: AdaptiveWeight | None = None,
     generator: torch.Generator | None = None,
-) -> torch.Tensor:
+    return_aux: bool = False,
+) -> torch.Tensor | tuple[torch.Tensor, dict]:
     """Lagrangian Self-Distillation loss (Eq. 6).
 
     Enforces d/db f(x_a, a -> b) == F(c, b, b, f(x_a, a -> b)) with a
@@ -110,7 +129,15 @@ def lsd_loss(
     with torch.no_grad():
         v_at_b = flow_net(cond, b, b, f_b)
     per_sample = (df_db - v_at_b).pow(2).mean(dim=-1, keepdim=True)
-    return _weighted(per_sample, weight_fn(a, b) if weight_fn is not None else None)
+    w = weight_fn(a, b) if weight_fn is not None else None
+    loss = _weighted(per_sample, w)
+    if return_aux:
+        aux = {
+            "mse": per_sample.detach().mean(),
+            "w": w.detach().mean() if w is not None else torch.zeros((), device=x1.device),
+        }
+        return loss, aux
+    return loss
 
 
 def eos_loss(

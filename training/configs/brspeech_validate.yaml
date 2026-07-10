@@ -9,8 +9,8 @@ trainer:
   max_steps: 2000
   accumulate_grad_batches: 8      # micro-batch 4 -> effective batch 32
   gradient_clip_val: 1.0
-  # NOTE: counts micro-batches, not optimizer steps (2000 batches = 250 opt steps)
-  val_check_interval: 2000
+  # NOTE: counts micro-batches, not optimizer steps (1000 batches = 125 opt steps)
+  val_check_interval: 1000
   check_val_every_n_epoch: null
   limit_val_batches: 25
   log_every_n_steps: 10
@@ -24,12 +24,19 @@ trainer:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
         dirpath: /media/fred/FRED5TB/pocket-tts-training/checkpoints/brspeech_validate
-        filename: "step{step}-val{val/loss_total:.3f}"
+        filename: "step{step}-fm{val/mse_fm:.4f}"
         auto_insert_metric_name: false
-        monitor: val/loss_total
+        # Raw FM error: val/loss_total is dominated by the adaptive-weighted
+        # LSD term, which keeps falling even after real quality degrades.
+        monitor: val/mse_fm
         mode: min
         save_top_k: 2
         save_last: true
+    - class_path: lightning.pytorch.callbacks.EarlyStopping
+      init_args:
+        monitor: val/mse_fm
+        mode: min
+        patience: 3
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
 
 model:

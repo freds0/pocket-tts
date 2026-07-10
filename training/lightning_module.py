@@ -8,6 +8,7 @@ to extract target latents; `emb_mean`/`emb_std` statistics are kept from the
 checkpoint.
 """
 
+import contextlib
 import copy
 import logging
 import math
@@ -17,6 +18,7 @@ import lightning.pytorch as pl
 import torch
 from torch import nn
 
+from pocket_tts.default_parameters import DEFAULT_EOS_THRESHOLD
 from pocket_tts.models.tts_model import TTSModel
 from training.losses import AdaptiveWeight, eos_loss, flow_matching_loss, lsd_loss
 from training.sequence import assemble_batch, gather_conditioning
@@ -84,6 +86,10 @@ class PocketTTSTraining(pl.LightningModule):
                 "training latents. Accept the terms at "
                 "https://huggingface.co/kyutai/pocket-tts and run `hf auth login`."
             )
+        if self.hparams.eos_weight == 0:
+            # Actually freeze the head: 0 * loss still leaves it in the
+            # optimizer, where AdamW weight decay erodes its calibration.
+            self.flow_lm.out_eos.requires_grad_(False)
         if self.hparams.activation_checkpointing:
             _apply_activation_checkpointing(self.flow_lm.transformer)
 
@@ -150,10 +156,12 @@ class PocketTTSTraining(pl.LightningModule):
         with torch.autocast(device_type=self.device.type, enabled=False):
             cond = gather_conditioning(self.flow_lm, transformer_out, assembled)
 
-            eos_logits = self.flow_lm.out_eos(cond)[..., 0]
-            loss_eos = eos_loss(
-                eos_logits, assembled.eos_labels, assembled.frame_mask, p.eos_pos_weight
-            )
+            # With eos_weight == 0 the head is frozen and only monitored.
+            with torch.no_grad() if p.eos_weight == 0 else contextlib.nullcontext():
+                eos_logits = self.flow_lm.out_eos(cond)[..., 0]
+                loss_eos = eos_loss(
+                    eos_logits, assembled.eos_labels, assembled.frame_mask, p.eos_pos_weight
+                )
 
             cond_flat = cond[assembled.frame_mask]
             x1_flat = assembled.target_latents[assembled.frame_mask]
@@ -162,42 +170,81 @@ class PocketTTSTraining(pl.LightningModule):
             cond_rep = cond_flat.repeat(p.head_batch_multiplier, 1)
             x1_rep = x1_flat.repeat(p.head_batch_multiplier, 1)
             n_fm = max(1, int(p.fm_fraction * cond_rep.shape[0]))
-            loss_fm = flow_matching_loss(
+            loss_fm, aux_fm = flow_matching_loss(
                 self.flow_lm.flow_net,
                 cond_rep[:n_fm],
                 x1_rep[:n_fm],
                 self.adaptive_fm,
                 generator,
+                return_aux=True,
             )
             if n_fm < cond_rep.shape[0]:
-                loss_lsd = lsd_loss(
+                loss_lsd, aux_lsd = lsd_loss(
                     self.flow_lm.flow_net,
                     cond_rep[n_fm:],
                     x1_rep[n_fm:],
                     self.adaptive_lsd,
                     generator,
+                    return_aux=True,
                 )
             else:
                 loss_lsd = torch.zeros_like(loss_fm)
+                aux_lsd = {k: torch.zeros_like(v) for k, v in aux_fm.items()}
 
-        loss = loss_fm + loss_lsd + p.eos_weight * loss_eos
+        loss = loss_fm + loss_lsd
+        if p.eos_weight > 0:
+            loss = loss + p.eos_weight * loss_eos
         frames = int(assembled.frame_mask.sum())
+
+        # EOS calibration at the deployed threshold: mean logit on the true EOS
+        # frame, and how often earlier frames would (wrongly) fire.
+        with torch.no_grad():
+            is_eos = assembled.eos_labels.bool()
+            non_eos = assembled.frame_mask & ~is_eos
+            eos_logit_true = eos_logits[is_eos].mean()
+            eos_false_trigger = (
+                (eos_logits[non_eos] > DEFAULT_EOS_THRESHOLD).float().mean()
+                if int(non_eos.sum()) > 0
+                else torch.zeros((), device=self.device)
+            )
+
+        batch_size = len(batch["text_tokens"])
         self.log_dict(
             {
                 f"{stage}/loss_fm": loss_fm,
                 f"{stage}/loss_lsd": loss_lsd,
                 f"{stage}/loss_eos": loss_eos,
                 f"{stage}/loss_total": loss,
-                f"{stage}/frames_per_batch": float(frames),
             },
             prog_bar=stage == "train",
-            batch_size=len(batch["text_tokens"]),
+            batch_size=batch_size,
+            sync_dist=stage == "val",
+        )
+        self.log_dict(
+            {
+                # Raw errors: the adaptive-weighted losses above can fall from
+                # w drift alone; these are the signals to trust (and monitor).
+                f"{stage}/mse_fm": aux_fm["mse"],
+                f"{stage}/mse_lsd": aux_lsd["mse"],
+                f"{stage}/w_fm": aux_fm["w"],
+                f"{stage}/w_lsd": aux_lsd["w"],
+                f"{stage}/eos_logit_true": eos_logit_true,
+                f"{stage}/eos_false_trigger": eos_false_trigger,
+                f"{stage}/frames_per_batch": float(frames),
+            },
+            batch_size=batch_size,
             sync_dist=stage == "val",
         )
         return loss
 
     def training_step(self, batch: dict, batch_idx: int) -> torch.Tensor:
         return self._step(batch, batch_idx, "train")
+
+    def on_before_optimizer_step(self, optimizer):
+        # Pre-clip gradient norm (norm-of-norms avoids materializing a flat copy).
+        norms = [p.grad.norm(2) for p in self.parameters() if p.grad is not None]
+        if norms:
+            self.log("train/grad_norm", torch.stack(norms).norm(2))
 
     def validation_step(self, batch: dict, batch_idx: int) -> torch.Tensor:
         return self._step(batch, batch_idx, "val")
@@ -226,8 +273,14 @@ class PocketTTSTraining(pl.LightningModule):
         config.weights_path = None
         config.flow_lm.weights_path = None
         config.mimi.weights_path = None
+        # Deployed threshold: with anything laxer, the TensorBoard audio hides
+        # the early-truncation failures the exported model would actually show.
         tts = TTSModel._from_pydantic_config_with_weights(
-            config, temp=0.7, lsd_decode_steps=1, noise_clamp=None, eos_threshold=0.5
+            config,
+            temp=0.7,
+            lsd_decode_steps=1,
+            noise_clamp=None,
+            eos_threshold=DEFAULT_EOS_THRESHOLD,
         )
         tts.flow_lm.load_state_dict(
             {k: v.detach().cpu().float() for k, v in self.flow_lm.state_dict().items()}

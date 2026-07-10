@@ -71,8 +71,10 @@ This targets `english` (the 6-layer, ~90M shipped model) — English has no
 ## What is trained
 
 - **Trained:** FlowLM backbone transformer, LSD flow head (`SimpleMLPAdaLN`),
-  EOS head, text embedding table, `speaker_proj_weight`, BOS embeddings, and a
-  learned adaptive loss weighting `w_psi(s, t)` (training-only, not exported).
+  EOS head (only when `eos_weight > 0`; at `0.0` it is truly frozen —
+  `requires_grad_(False)` — to preserve the pretrained calibration), text
+  embedding table, `speaker_proj_weight`, BOS embeddings, and a learned
+  adaptive loss weighting `w_psi(s, t)` (training-only, not exported).
 - **Frozen:** the entire Mimi VAE (target-latent extractor + vocoder) and the
   latent normalization statistics `emb_mean`/`emb_std`.
 
