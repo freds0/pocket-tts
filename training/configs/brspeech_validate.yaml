@@ -1,0 +1,62 @@
+# Pipeline-validation fine-tune on local BRSpeech-LN (RTX 3060 12GB).
+# Run: conda run -n pocket-tts python -m training.train fit --config training/configs/brspeech_validate.yaml
+seed_everything: 42
+
+trainer:
+  accelerator: gpu
+  devices: 1
+  precision: bf16-mixed
+  max_steps: 2000
+  accumulate_grad_batches: 8      # micro-batch 4 -> effective batch 32
+  gradient_clip_val: 1.0
+  # NOTE: counts micro-batches, not optimizer steps (2000 batches = 250 opt steps)
+  val_check_interval: 2000
+  check_val_every_n_epoch: null
+  limit_val_batches: 25
+  log_every_n_steps: 10
+  num_sanity_val_steps: 1
+  logger:
+    class_path: lightning.pytorch.loggers.TensorBoardLogger
+    init_args:
+      save_dir: /media/fred/FRED5TB/pocket-tts-training/logs
+      name: brspeech_validate
+  callbacks:
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        dirpath: /media/fred/FRED5TB/pocket-tts-training/checkpoints/brspeech_validate
+        filename: "step{step}-val{val/loss_total:.3f}"
+        auto_insert_metric_name: false
+        monitor: val/loss_total
+        mode: min
+        save_top_k: 2
+        save_last: true
+    - class_path: lightning.pytorch.callbacks.LearningRateMonitor
+
+model:
+  model_config: portuguese_24l
+  pretrained: true
+  lr: 3.0e-5
+  warmup_steps: 200
+  head_batch_multiplier: 8
+  fm_fraction: 0.75
+  adaptive_weighting: true
+  text_dropout: 0.15
+  voice_prompt_prob: 0.5
+  # 0.0 keeps the pretrained EOS calibration (aggressive EOS training makes the
+  # exported model stop speaking too early at the stock threshold of -4.0).
+  eos_weight: 0.0
+  activation_checkpointing: false
+  val_voice_prompt: /media/fred/FRED5TB/DATASETS/BRSpeech-LN/wavs/2961_10229_000000-0001.wav
+  val_sample_texts:
+    - "O rato roeu a roupa do rei de Roma."
+    - "A inteligência artificial está transformando a síntese de voz em português."
+
+data:
+  source: brspeech
+  brspeech_root: /media/fred/FRED5TB/DATASETS/BRSpeech-LN
+  tokenizer_path: hf://kyutai/pocket-tts-without-voice-cloning/languages/portuguese_24l/tokenizer.model@d29db7978e464fb90cb3359ee0c69a273b9142cc
+  batch_size: 4
+  num_workers: 4
+  min_duration: 1.0
+  max_duration: 15.0
+  val_fraction: 0.01
