@@ -9,10 +9,12 @@ trainer:
   devices: 1
   precision: bf16-mixed
   max_steps: 2000
-  accumulate_grad_batches: 8      # micro-batch 4 -> effective batch 32
+  # Effective batch = micro-batch. 480 (60x8) burned ~5 epochs per optimizer
+  # step for no measurable gain; updates/hour is the bottleneck here.
+  accumulate_grad_batches: 1
   gradient_clip_val: 1.0
-  # NOTE: counts micro-batches, not optimizer steps (1000 batches = 125 opt steps)
-  val_check_interval: 1000
+  # NOTE: counts micro-batches; with accumulate=1 they equal optimizer steps.
+  val_check_interval: 250
   check_val_every_n_epoch: null
   limit_val_batches: 25
   log_every_n_steps: 10
@@ -39,6 +41,9 @@ trainer:
         monitor: val/mse_fm
         mode: min
         patience: 3
+        # Without this, asymptotic ~0.001 improvements reset the patience and
+        # the run never stops on a plateau (seen in the 2026-07-10 run).
+        min_delta: 0.003
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
 
 model:
@@ -51,9 +56,11 @@ model:
   adaptive_weighting: true
   text_dropout: 0.15
   voice_prompt_prob: 0.5
-  # 0.0 keeps the pretrained EOS calibration (aggressive EOS training makes the
-  # exported model stop speaking too early at the stock threshold of -4.0).
-  eos_weight: 0.0
+  # Light EOS training so the head tracks the drifting backbone: with the head
+  # frozen (0.0), eos_logit_true degraded past the -4.0 deployment threshold by
+  # step ~650 (2026-07-10 run) — the exported model would not stop speaking.
+  # Do NOT restore the pretrained out_eos.* at export when this is > 0.
+  eos_weight: 0.05
   activation_checkpointing: false
   val_voice_prompt: /media/fred/FRED5TB/DATASETS/LJSpeech-1.1/wavs/LJ001-0001.wav
   val_sample_texts:
@@ -64,7 +71,9 @@ data:
   source: brspeech  # generic LJSpeech-format loader; name predates this English use case
   brspeech_root: /media/fred/FRED5TB/DATASETS/LJSpeech-1.1
   tokenizer_path: hf://kyutai/pocket-tts-without-voice-cloning/languages/english/tokenizer.model@d29db7978e464fb90cb3359ee0c69a273b9142cc
-  batch_size: 4
+  # Sized for the 24 GB card this config actually runs on (ceia4090); on the
+  # local 12 GB RTX 3060 use batch_size 4 + accumulate_grad_batches 8.
+  batch_size: 60
   num_workers: 4
   min_duration: 1.0
   max_duration: 15.0
