@@ -7,8 +7,11 @@ Appendix A LSD losses). Default target: the 24-layer Portuguese teacher
 
 ## One-time setup
 
-1. Conda env (already provisioned): `pocket-tts` with torch-CUDA, lightning,
-   datasets, torchaudio, soundfile.
+1. Conda env: `pocket-tts` with the base package plus the training extras —
+   ```bash
+   conda run -n pocket-tts pip install -e ".[audio]"
+   conda run -n pocket-tts pip install -r training/requirements.txt
+   ```
 2. **Gated weights (required for training).** The public
    `kyutai/pocket-tts-without-voice-cloning` checkpoints ship a **zeroed Mimi
    encoder**, so they cannot produce training latents. Accept the terms at
@@ -16,11 +19,12 @@ Appendix A LSD losses). Default target: the 24-layer Portuguese teacher
    ```bash
    conda run -n pocket-tts hf auth login
    ```
-3. HF caches (weights, tokenizer, TAGARELA) live under
-   `/media/fred/FRED5TB/pocket-tts-training/hf_cache` (`train.py` sets
-   `HF_HOME` automatically; `/home` is nearly full on the local machine —
-   if disk is tight where you run this, watch `./logs/checkpoints/`, which
-   is *not* redirected there).
+3. HF caches (weights, tokenizer, TAGARELA) and Lightning logs/checkpoints
+   all default to `./cache/` and `./logs/`, relative to the cwd
+   `training.train` is run from (`train.py` sets `HF_HOME` automatically).
+   To use a different disk (e.g. a nearly-full `/home`), export `HF_HOME`
+   yourself before running, or edit `trainer.logger[*].init_args.save_dir` /
+   `callbacks[*].init_args.dirpath` in the config.
 
 ## Running
 

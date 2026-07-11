@@ -1,0 +1,21 @@
+# Training-only dependencies, on top of the base `pocket-tts` package.
+#
+# Setup on a fresh machine/env:
+#   pip install -e ".[audio]"
+#   pip install -r training/requirements.txt
+#
+# Versions below are floors, not pins: whatever resolves cleanly against the
+# already-installed torch build is fine. torchaudio in particular just needs
+# to match torch's major CUDA/ABI (pip usually resolves this on its own; if
+# not, install from the matching index, e.g.
+# https://download.pytorch.org/whl/cu130).
+
+lightning>=2.6.5
+torchaudio>=2.11.0
+datasets>=5.0.0          # pyarrow.PyExtensionType errors below this version
+jsonargparse[signatures]>=4.27.7   # required by LightningCLI
+tensorboard>=2.21.0      # TensorBoardLogger
+wandb>=0.12.10           # WandbLogger (optional logger, wired into all configs)
+soundfile>=0.12.0
+pytest>=9.0.2
+PyYAML>=6.0

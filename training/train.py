@@ -8,8 +8,9 @@ and any Trainer flag is overridable from the YAML or the command line.
 
 import os
 
-# Keep HF downloads (weights, tokenizer, TAGARELA cache) off the nearly-full /home.
-os.environ.setdefault("HF_HOME", "/media/fred/FRED5TB/pocket-tts-training/hf_cache")
+# Keep HF downloads (weights, tokenizer, TAGARELA cache) out of ~/.cache by
+# default; relative to the cwd training.train is run from, like ./logs/.
+os.environ.setdefault("HF_HOME", "./cache/hf_cache")
 
 import torch  # noqa: E402
 from lightning.pytorch.cli import LightningCLI  # noqa: E402
