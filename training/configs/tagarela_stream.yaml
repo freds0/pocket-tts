@@ -18,14 +18,19 @@ trainer:
   log_every_n_steps: 25
   num_sanity_val_steps: 1
   logger:
-    class_path: lightning.pytorch.loggers.TensorBoardLogger
-    init_args:
-      save_dir: /media/fred/FRED5TB/pocket-tts-training/logs
-      name: tagarela_stream
+    - class_path: lightning.pytorch.loggers.TensorBoardLogger
+      init_args:
+        save_dir: ./logs/tensorboard
+        name: tagarela_stream
+    - class_path: lightning.pytorch.loggers.WandbLogger
+      init_args:
+        project: pocket-tts
+        name: tagarela_stream
+        save_dir: ./logs/tensorboard
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        dirpath: /media/fred/FRED5TB/pocket-tts-training/checkpoints/tagarela_stream
+        dirpath: ./logs/checkpoints/tagarela_stream
         filename: "step{step}-fm{val/mse_fm:.4f}"
         auto_insert_metric_name: false
         # Raw FM error: val/loss_total is dominated by the adaptive-weighted

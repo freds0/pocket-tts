@@ -16,14 +16,19 @@ trainer:
   log_every_n_steps: 10
   num_sanity_val_steps: 1
   logger:
-    class_path: lightning.pytorch.loggers.TensorBoardLogger
-    init_args:
-      save_dir: /media/fred/FRED5TB/pocket-tts-training/logs
-      name: brspeech_validate
+    - class_path: lightning.pytorch.loggers.TensorBoardLogger
+      init_args:
+        save_dir: ./logs/tensorboard
+        name: brspeech_validate
+    - class_path: lightning.pytorch.loggers.WandbLogger
+      init_args:
+        project: pocket-tts
+        name: brspeech_validate
+        save_dir: ./logs/tensorboard
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        dirpath: /media/fred/FRED5TB/pocket-tts-training/checkpoints/brspeech_validate
+        dirpath: ./logs/checkpoints/brspeech_validate
         filename: "step{step}-fm{val/mse_fm:.4f}"
         auto_insert_metric_name: false
         # Raw FM error: val/loss_total is dominated by the adaptive-weighted

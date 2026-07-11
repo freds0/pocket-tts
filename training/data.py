@@ -1,7 +1,10 @@
 """Datasets and collation for pocket-tts training.
 
-Two sources, one common sample format `{"text": str, "waveform": FloatTensor[L]}`
-at the model sample rate (24 kHz):
+Two sources, one common sample format
+`{"text": str, "waveform": FloatTensor[L], "speaker_id": str | None}` at the
+model sample rate (24 kHz). `speaker_id` groups same-speaker utterances for
+voice-prompt pairing in `PocketTTSTraining._sample_voice_prompt`; `None`
+means "no reliable speaker info" and disables pairing for that sample.
 
 - `LJSpeechDataset`: local LJSpeech-format corpora (e.g. BRSpeech-LN,
   `metadata.csv` with `id|text|normalized_text` plus a `wavs/` directory).
@@ -50,6 +53,17 @@ def _stable_hash(key: str) -> float:
     return int.from_bytes(digest[:8], "big") / 2**64
 
 
+def _speaker_id(utt_id: str, root: Path) -> str:
+    """Best-effort speaker key for same-speaker voice-prompt pairing.
+
+    BRSpeech-LN ids are `{speaker}_{session}_...` (e.g. "2961_10229_...");
+    LJSpeech ids ("LJ001-0001") have no such prefix, so every item collapses
+    to one speaker key per corpus root (correct: LJSpeech is single-speaker).
+    """
+    prefix = utt_id.split("_", 1)[0] if "_" in utt_id else root.name
+    return f"{root.name}:{prefix}"
+
+
 class LJSpeechDataset(Dataset):
     """LJSpeech-format dataset (used for BRSpeech-LN pipeline validation)."""
 
@@ -68,7 +82,7 @@ class LJSpeechDataset(Dataset):
         self.wavs_dir = self.root / "wavs"
         durations = self._load_durations(cache_dir)
 
-        self.items: list[tuple[str, str]] = []
+        self.items: list[tuple[str, str, str]] = []
         with open(self.root / metadata_name, encoding="utf-8") as f:
             for line in f:
                 fields = line.rstrip("\n").split("|")
@@ -82,7 +96,7 @@ class LJSpeechDataset(Dataset):
                     continue
                 is_val = _stable_hash(utt_id) < val_fraction
                 if (split == "val") == is_val:
-                    self.items.append((utt_id, text))
+                    self.items.append((utt_id, text, _speaker_id(utt_id, self.root)))
         logger.info("LJSpeechDataset(%s): %d items in split %s", self.root, len(self.items), split)
 
     def _load_durations(self, cache_dir: str | Path | None) -> dict[str, float]:
@@ -110,10 +124,14 @@ class LJSpeechDataset(Dataset):
     def __getitem__(self, index: int) -> dict:
         import soundfile
 
-        utt_id, text = self.items[index]
+        utt_id, text, speaker_id = self.items[index]
         data, sr = soundfile.read(str(self.wavs_dir / f"{utt_id}.wav"), dtype="float32")
         waveform = torch.from_numpy(data.T if data.ndim == 2 else data)
-        return {"text": text, "waveform": resample_to_model_rate(waveform, sr)}
+        return {
+            "text": text,
+            "waveform": resample_to_model_rate(waveform, sr),
+            "speaker_id": speaker_id,
+        }
 
 
 class TagarelaStreaming(IterableDataset):
@@ -174,7 +192,15 @@ class TagarelaStreaming(IterableDataset):
             if not text:
                 continue
             waveform = torch.from_numpy(data.T if data.ndim == 2 else data)
-            yield {"text": text, "waveform": resample_to_model_rate(waveform, sr)}
+            # No reliable per-speaker field in this corpus (podcast episodes,
+            # not speaker-labeled): speaker_id=None disables voice-prompt
+            # pairing for these samples rather than risk pairing across
+            # speakers (see PocketTTSTraining._sample_voice_prompt).
+            yield {
+                "text": text,
+                "waveform": resample_to_model_rate(waveform, sr),
+                "speaker_id": None,
+            }
 
 
 def _skip_take_interleave(iterable, worker_id: int, num_workers: int):
@@ -242,4 +268,5 @@ class Collate:
             "waveforms": waveforms,
             "wave_lengths": lengths,
             "text_tokens": [self._tokenize(item["text"]) for item in batch],
+            "speaker_ids": [item.get("speaker_id") for item in batch],
         }

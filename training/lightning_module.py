@@ -111,20 +111,44 @@ class PocketTTSTraining(pl.LightningModule):
             latents = self.mimi.encode_to_latent(waveforms[:, None, :].float())
         return latents.transpose(1, 2).to(torch.float32)
 
-    def _split_prompt(
-        self, latents: torch.Tensor, n_frames: int, rng: random.Random
-    ) -> tuple[torch.Tensor | None, torch.Tensor]:
-        """Split one sample's latents into (voice prompt, target) in latent space."""
+    def _sample_voice_prompt(
+        self,
+        raw_latents: torch.Tensor,
+        frame_counts: list[int],
+        speaker_ids: list | None,
+        i: int,
+        rng: random.Random,
+    ) -> torch.Tensor | None:
+        """Pick a voice-prompt snippet from a DIFFERENT utterance of the same
+        speaker in this batch — matches inference (an unrelated reference
+        clip conditions generation of the full target text).
+
+        The previous approach cut the prompt from the target utterance
+        itself while keeping the full transcript as text conditioning, which
+        taught the model that some prefix of the text was already "spoken"
+        by the prompt — a mismatch that doesn't exist at inference (the
+        prompt there is unrelated audio) and that produced garbled/skipped
+        words. Falls back to no prompt (not the old self-cut) when no
+        same-speaker candidate is available in the batch (e.g. TAGARELA,
+        which has no reliable speaker field, or small multi-speaker batches).
+        """
         p = self.hparams
-        min_target = 4
-        can_prompt = n_frames >= p.voice_prompt_min_frames + min_target
-        if can_prompt and rng.random() < p.voice_prompt_prob:
-            k = rng.randint(
-                p.voice_prompt_min_frames,
-                min(p.voice_prompt_max_frames, n_frames - min_target),
-            )
-            return latents[:k], latents[k:n_frames]
-        return None, latents[:n_frames]
+        if speaker_ids is None or speaker_ids[i] is None:
+            return None
+        if rng.random() >= p.voice_prompt_prob:
+            return None
+        candidates = [
+            j
+            for j, sid in enumerate(speaker_ids)
+            if j != i and sid == speaker_ids[i] and frame_counts[j] >= p.voice_prompt_min_frames
+        ]
+        if not candidates:
+            return None
+        j = rng.choice(candidates)
+        n_j = frame_counts[j]
+        k = rng.randint(p.voice_prompt_min_frames, min(p.voice_prompt_max_frames, n_j))
+        start = rng.randint(0, n_j - k)
+        return raw_latents[j, start : start + k]
 
     def _step(self, batch: dict, batch_idx: int, stage: str) -> torch.Tensor:
         p = self.hparams
@@ -140,10 +164,12 @@ class PocketTTSTraining(pl.LightningModule):
             for n in batch["wave_lengths"]
         ]
 
+        speaker_ids = batch.get("speaker_ids")
         text_tokens, voice_latents, target_latents = [], [], []
         emb_mean, emb_std = self.flow_lm.emb_mean, self.flow_lm.emb_std
         for i, tokens in enumerate(batch["text_tokens"]):
-            voice, target_raw = self._split_prompt(raw_latents[i], frame_counts[i], rng)
+            target_raw = raw_latents[i, : frame_counts[i]]
+            voice = self._sample_voice_prompt(raw_latents, frame_counts, speaker_ids, i, rng)
             if rng.random() < p.text_dropout and stage == "train":
                 tokens = tokens[:0]
             text_tokens.append(tokens)
@@ -292,12 +318,22 @@ class PocketTTSTraining(pl.LightningModule):
         voice_state = tts.get_state_for_audio_prompt(Path(self.hparams.val_voice_prompt))
         for i, text in enumerate(texts):
             audio = tts.generate_audio(voice_state, text, copy_state=True)
-            self.logger.experiment.add_audio(
-                f"val_samples/{i}",
-                audio.reshape(-1, 1).numpy(),
-                global_step=self.global_step,
-                sample_rate=tts.sample_rate,
-            )
+            self._log_audio(f"val_samples/{i}", audio, tts.sample_rate)
+
+    def _log_audio(self, key: str, audio: torch.Tensor, sample_rate: int):
+        # self.logger is only trainer.loggers[0]; with wandb + TensorBoard both
+        # configured, iterate explicitly so every logger gets the sample.
+        for lg in self.loggers:
+            if isinstance(lg, pl.loggers.TensorBoardLogger):
+                lg.experiment.add_audio(
+                    key, audio.reshape(-1, 1).numpy(), global_step=self.global_step,
+                    sample_rate=sample_rate,
+                )
+            elif isinstance(lg, pl.loggers.WandbLogger):
+                lg.log_audio(
+                    key=key, audios=[audio.numpy()], sample_rate=[sample_rate],
+                    step=self.global_step,
+                )
 
     # ------------------------------------------------------------ optimizer
 

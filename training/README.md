@@ -16,9 +16,11 @@ Appendix A LSD losses). Default target: the 24-layer Portuguese teacher
    ```bash
    conda run -n pocket-tts hf auth login
    ```
-3. All caches/checkpoints/logs live under
-   `/media/fred/FRED5TB/pocket-tts-training/` (`train.py` sets `HF_HOME`
-   automatically; `/home` is nearly full).
+3. HF caches (weights, tokenizer, TAGARELA) live under
+   `/media/fred/FRED5TB/pocket-tts-training/hf_cache` (`train.py` sets
+   `HF_HOME` automatically; `/home` is nearly full on the local machine —
+   if disk is tight where you run this, watch `./logs/checkpoints/`, which
+   is *not* redirected there).
 
 ## Running
 
@@ -41,11 +43,12 @@ python -m training.train fit --config training/configs/ljspeech_english.yaml
 python -m training.train fit --config <cfg> --ckpt_path <...>/last.ckpt
 
 # Export for inference with the stock CLI
-python -m training.export <checkpoint>.ckpt /media/fred/FRED5TB/pocket-tts-training/export/run1
+python -m training.export <checkpoint>.ckpt ./logs/export/run1
 pocket-tts generate --config .../export/run1/config.yaml --text "Olá mundo" --output out.wav
 
-# Monitor
-tensorboard --logdir /media/fred/FRED5TB/pocket-tts-training/logs
+# Monitor (logs/checkpoints are written under ./logs/, relative to the cwd
+# training.train was run from)
+tensorboard --logdir ./logs/tensorboard
 ```
 
 ## LJSpeech (English)
@@ -80,9 +83,13 @@ This targets `english` (the 6-layer, ~90M shipped model) — English has no
 
 Sequence layout replicates inference exactly
 (`[bos_before_voice | speaker-projected voice prompt | text | BOS | latents]`);
-voice prompts are self-prompts (a random 1–4 s latent prefix of the utterance),
-and text conditioning is dropped with p=0.15 so latent CFG (alpha≈1.5) keeps
-working at inference.
+voice prompts are a random 1–4 s latent snippet from a *different* utterance
+of the same speaker within the batch (matching inference: an unrelated
+reference clip conditions generation of the full target text), and text
+conditioning is dropped with p=0.15 so latent CFG (alpha≈1.5) keeps working
+at inference. Speaker pairing needs a `speaker_id` per sample (derived from
+the BRSpeech-LN/LJSpeech filename convention); TAGARELA has no reliable
+speaker field, so its samples train without a voice prompt.
 
 ## Notes / caveats
 

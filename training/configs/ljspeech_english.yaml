@@ -20,14 +20,19 @@ trainer:
   log_every_n_steps: 10
   num_sanity_val_steps: 1
   logger:
-    class_path: lightning.pytorch.loggers.TensorBoardLogger
-    init_args:
-      save_dir: /media/fred/FRED5TB/pocket-tts-training/logs
-      name: ljspeech_english
+    - class_path: lightning.pytorch.loggers.TensorBoardLogger
+      init_args:
+        save_dir: ./logs/tensorboard
+        name: ljspeech_english
+    - class_path: lightning.pytorch.loggers.WandbLogger
+      init_args:
+        project: pocket-tts
+        name: ljspeech_english
+        save_dir: ./logs/tensorboard
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        dirpath: /media/fred/FRED5TB/pocket-tts-training/checkpoints/ljspeech_english
+        dirpath: ./logs/checkpoints/ljspeech_english
         filename: "step{step}-fm{val/mse_fm:.4f}"
         auto_insert_metric_name: false
         # Raw FM error: val/loss_total is dominated by the adaptive-weighted
@@ -49,11 +54,20 @@ trainer:
 model:
   model_config: english
   pretrained: true
-  lr: 3.0e-5
+  # Lowered from 3e-5: train/grad_norm crept from ~1.9 to ~3.1 over the
+  # 2026-07-10 run with gradient_clip_val=1.0 clipping nearly every step —
+  # a sign the effective step size was too large for this 6-layer model.
+  lr: 1.0e-5
   warmup_steps: 200
   head_batch_multiplier: 8
   fm_fraction: 0.75
-  adaptive_weighting: true
+  # Disabled to isolate a suspected cause of the 2026-07-10 instability: w_fm/
+  # w_lsd drifted increasingly negative (-0.89/-1.80, never hit the +-4 clamp)
+  # while val/mse_fm plateaued then rose (0.40 -> 0.50) and grad_norm climbed
+  # — consistent with the learned exp(-w) amplification pushing updates too
+  # large for this config even though it never saturated the clamp. Re-enable
+  # once a clean run confirms mse_fm converges without it.
+  adaptive_weighting: false
   text_dropout: 0.15
   voice_prompt_prob: 0.5
   # Light EOS training so the head tracks the drifting backbone: with the head

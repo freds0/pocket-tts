@@ -134,6 +134,34 @@ def test_loss_aux_and_weight_clamp():
     assert torch.allclose(extreme, torch.exp(torch.tensor(4.0)) - 4.0)
 
 
+def test_sample_voice_prompt_never_reuses_target_utterance():
+    import random
+
+    from training.lightning_module import PocketTTSTraining
+
+    module = PocketTTSTraining(
+        voice_prompt_prob=1.0, voice_prompt_min_frames=2, voice_prompt_max_frames=4
+    )
+    raw_latents = torch.arange(3 * 10 * LDIM, dtype=torch.float32).reshape(3, 10, LDIM)
+    frame_counts = [10, 10, 10]
+    speaker_ids = ["a", "a", "b"]  # sample 2 has no same-speaker partner
+
+    rng = random.Random(0)
+    for _ in range(20):
+        voice = module._sample_voice_prompt(raw_latents, frame_counts, speaker_ids, 0, rng)
+        assert voice is not None
+        assert 2 <= voice.shape[0] <= 4
+        # Every value must come from sample 1 (the only same-speaker peer),
+        # never from sample 0 itself.
+        assert torch.isin(voice, raw_latents[1]).all()
+
+    voice_no_peer = module._sample_voice_prompt(raw_latents, frame_counts, speaker_ids, 2, rng)
+    assert voice_no_peer is None  # no same-speaker candidate for sample 2
+
+    voice_no_ids = module._sample_voice_prompt(raw_latents, frame_counts, None, 0, rng)
+    assert voice_no_ids is None  # unknown-speaker corpora (e.g. TAGARELA) disable pairing
+
+
 def test_lsd_loss_backward(flow_lm):
     torch.manual_seed(0)
     flow_net = SimpleMLPAdaLN(LDIM, 32, LDIM, DIM, 2, num_time_conds=2)
@@ -234,6 +262,17 @@ def test_ljspeech_dataset(tmp_path):
     assert item["text"] == "texto qualquer"
     assert item["waveform"].dim() == 1
     assert abs(item["waveform"].shape[0] - 2.0 * MODEL_SAMPLE_RATE) < 100
+    # No "_" in "utt0" -> single-speaker corpus, keyed by root dir name.
+    assert item["speaker_id"] == f"{root.name}:{root.name}"
+
+
+def test_speaker_id_multi_speaker_prefix():
+    from training.data import _speaker_id
+
+    root = Path("/tmp/BRSpeech-LN")
+    assert _speaker_id("2961_10229_000000-0001", root) == "BRSpeech-LN:2961"
+    assert _speaker_id("2961_10229_000000-0002", root) == "BRSpeech-LN:2961"
+    assert _speaker_id("LJ001-0001", root) != _speaker_id("2961_10229_000000-0001", root)
 
 
 def test_collate(tokenizer_path):
@@ -251,3 +290,4 @@ def test_collate(tokenizer_path):
     assert batch["waveforms"][1, 500:].abs().sum() == 0
     assert len(batch["text_tokens"]) == 2
     assert all(t.dtype == torch.long and t.numel() > 0 for t in batch["text_tokens"])
+    assert batch["speaker_ids"] == [None, None]  # items without "speaker_id" default to None
