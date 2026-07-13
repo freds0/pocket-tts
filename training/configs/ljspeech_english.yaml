@@ -8,10 +8,10 @@ trainer:
   accelerator: gpu
   devices: 1
   precision: bf16-mixed
-  max_steps: 2000
+  max_steps: 5000
   # Effective batch = micro-batch. 480 (60x8) burned ~5 epochs per optimizer
   # step for no measurable gain; updates/hour is the bottleneck here.
-  accumulate_grad_batches: 1
+  accumulate_grad_batches: 2
   gradient_clip_val: 1.0
   # NOTE: counts micro-batches; with accumulate=1 they equal optimizer steps.
   val_check_interval: 250
@@ -22,17 +22,17 @@ trainer:
   logger:
     - class_path: lightning.pytorch.loggers.TensorBoardLogger
       init_args:
-        save_dir: ./logs/tensorboard
+        save_dir: ./checkpoints/tensorboard
         name: ljspeech_english
     - class_path: lightning.pytorch.loggers.WandbLogger
       init_args:
         project: pocket-tts
         name: ljspeech_english
-        save_dir: ./logs/tensorboard
+        save_dir: ./checkpoints/tensorboard
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        dirpath: ./logs/checkpoints/ljspeech_english
+        dirpath: ./checkpoints/ljspeech_english
         filename: "step{step}-fm{val/mse_fm:.4f}"
         auto_insert_metric_name: false
         # Raw FM error: val/loss_total is dominated by the adaptive-weighted
@@ -87,7 +87,7 @@ data:
   tokenizer_path: hf://kyutai/pocket-tts-without-voice-cloning/languages/english/tokenizer.model@d29db7978e464fb90cb3359ee0c69a273b9142cc
   # Sized for the 24 GB card this config actually runs on (ceia4090); on the
   # local 12 GB RTX 3060 use batch_size 4 + accumulate_grad_batches 8.
-  batch_size: 60
+  batch_size: 15
   num_workers: 4
   min_duration: 1.0
   max_duration: 15.0

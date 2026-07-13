@@ -6,11 +6,11 @@ trainer:
   accelerator: gpu
   devices: 1
   precision: bf16-mixed
-  max_steps: 2000
-  accumulate_grad_batches: 8      # micro-batch 4 -> effective batch 32
+  max_steps: 5000
+  accumulate_grad_batches: 2      # micro-batch 4 -> effective batch 32
   gradient_clip_val: 1.0
   # NOTE: counts micro-batches, not optimizer steps (1000 batches = 125 opt steps)
-  val_check_interval: 1000
+  val_check_interval: 250
   check_val_every_n_epoch: null
   limit_val_batches: 25
   log_every_n_steps: 10
@@ -18,17 +18,17 @@ trainer:
   logger:
     - class_path: lightning.pytorch.loggers.TensorBoardLogger
       init_args:
-        save_dir: ./logs/tensorboard
+        save_dir: ./checkpoints/tensorboard
         name: brspeech_validate
     - class_path: lightning.pytorch.loggers.WandbLogger
       init_args:
         project: pocket-tts
         name: brspeech_validate
-        save_dir: ./logs/tensorboard
+        save_dir: ./checkpoints/tensorboard
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        dirpath: ./logs/checkpoints/brspeech_validate
+        dirpath: ./checkpoints/brspeech_validate
         filename: "step{step}-fm{val/mse_fm:.4f}"
         auto_insert_metric_name: false
         # Raw FM error: val/loss_total is dominated by the adaptive-weighted
@@ -47,7 +47,7 @@ trainer:
 model:
   model_config: portuguese_24l
   pretrained: true
-  lr: 3.0e-5
+  lr: 1.0e-5
   warmup_steps: 200
   head_batch_multiplier: 8
   fm_fraction: 0.75
@@ -56,18 +56,21 @@ model:
   voice_prompt_prob: 0.5
   # 0.0 keeps the pretrained EOS calibration (aggressive EOS training makes the
   # exported model stop speaking too early at the stock threshold of -4.0).
-  eos_weight: 0.0
+  eos_weight: 0.05
   activation_checkpointing: false
   val_voice_prompt: /media/fred/FRED5TB/DATASETS/BRSpeech-LN/wavs/2961_10229_000000-0001.wav
   val_sample_texts:
     - "O rato roeu a roupa do rei de Roma."
-    - "A inteligência artificial está transformando a síntese de voz em português."
+    - "Ouviram do ipiranga às margens plácidas de um povo heróico o brado retumbante."
+    - "Minha terra tem palmeiras onde canta o sabiá, as aves que aqui gorjeiam não gorjeiam como lá."
+    - "Ó que saudades que tenho da aurora da minha vida, da minha infância querida, Que os anos não trazem mais."
+    - "No princípio Deus criou o céu e a terra, entretanto a terra era sem forma e vazia."
 
 data:
   source: brspeech
   brspeech_root: /media/fred/FRED5TB/DATASETS/BRSpeech-LN
   tokenizer_path: hf://kyutai/pocket-tts-without-voice-cloning/languages/portuguese_24l/tokenizer.model@d29db7978e464fb90cb3359ee0c69a273b9142cc
-  batch_size: 4
+  batch_size: 7
   num_workers: 4
   min_duration: 1.0
   max_duration: 15.0
